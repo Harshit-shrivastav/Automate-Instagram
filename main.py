@@ -52,6 +52,14 @@ def remove_followed_user(username):
     conn.commit()
     conn.close()
 
+def get_follow_date(username):
+    conn = sqlite3.connect(DATABASE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT follow_date FROM follows WHERE username = ?", (username,))
+    result = cursor.fetchone()
+    conn.close()
+    return result[0] if result else None
+
 async def login():
     """Login using credentials from environment variables."""
     username = os.getenv("IG_USERNAME")
@@ -107,8 +115,8 @@ async def unfollow_non_followers():
         followed_users = get_followed_users()
         for username in followed_users:
             user_id = cl.user_id_from_username(username)
-            is_following_back = cl.user_info(user_id).following_me
-            if not is_following_back:
+            user_info = cl.user_info(user_id)
+            if not user_info.is_following_me:
                 follow_date = datetime.strptime(get_follow_date(username), "%Y-%m-%d %H:%M:%S")
                 if datetime.now() - follow_date >= timedelta(days=2):
                     cl.user_unfollow(user_id)
@@ -117,39 +125,6 @@ async def unfollow_non_followers():
                     await asyncio.sleep(600)  # Wait 10 minutes before unfollowing the next user
     except Exception as e:
         print(f"Error during unfollowing: {e}")
-
-def get_follow_date(username):
-    conn = sqlite3.connect(DATABASE)
-    cursor = conn.cursor()
-    cursor.execute("SELECT follow_date FROM follows WHERE username = ?", (username,))
-    result = cursor.fetchone()
-    conn.close()
-    return result[0] if result else None
-"""
-async def repost_media(target_usernames):
-    for username in target_usernames:
-        try:
-            print(f"Fetching media for @{username}...")
-            user_id = cl.user_id_from_username(username)
-            medias = cl.user_medias_gql(user_id, amount=1)
-            if not medias:
-                print(f"No posts found for @{username}.")
-                continue
-
-            media = medias[0]
-            if not media.caption_text:
-                print(f"Skipped media from @{username}: No caption.")
-                continue
-
-            # Download and repost media
-            media_path = cl.photo_download(media.pk)
-            cl.photo_upload(media_path, caption=media.caption_text)
-            print(f"Reposted media from @{username}.")
-            Path(media_path).unlink()  # Clean up downloaded media
-            await asyncio.sleep(7200)  # Wait 2 hours before reposting
-        except Exception as e:
-            print(f"Error reposting media from @{username}: {e}")
-"""
 
 async def repost_media(target_usernames):
     """Fetch and repost media (photos or videos) from target usernames, restricted to posting between 8 AM and 11 PM IST."""
@@ -194,8 +169,6 @@ async def repost_media(target_usernames):
             await asyncio.sleep(7200)  # Wait 2 hours before reposting
         except Exception as e:
             print(f"Error reposting media from @{username}: {e}")
-
-
 
 async def main():
     """Main function to orchestrate tasks."""
