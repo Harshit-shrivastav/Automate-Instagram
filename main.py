@@ -1,6 +1,7 @@
 import os
 import asyncio
 import sqlite3
+from pytz import timezone
 from datetime import datetime, timedelta
 from instagrapi import Client
 from instagrapi.exceptions import ClientError
@@ -124,9 +125,8 @@ def get_follow_date(username):
     result = cursor.fetchone()
     conn.close()
     return result[0] if result else None
-
+"""
 async def repost_media(target_usernames):
-    """Fetch and repost media from target usernames."""
     for username in target_usernames:
         try:
             print(f"Fetching media for @{username}...")
@@ -149,6 +149,53 @@ async def repost_media(target_usernames):
             await asyncio.sleep(7200)  # Wait 2 hours before reposting
         except Exception as e:
             print(f"Error reposting media from @{username}: {e}")
+"""
+
+async def repost_media(target_usernames):
+    """Fetch and repost media (photos or videos) from target usernames, restricted to posting between 8 AM and 11 PM IST."""
+    ist = timezone('Asia/Kolkata')  # Define IST timezone
+
+    for username in target_usernames:
+        try:
+            # Check current time in IST
+            current_time = datetime.now(ist)
+            if current_time.hour < 8 or current_time.hour >= 23:
+                print("Outside posting hours (8 AM to 11 PM IST). Skipping repost.")
+                await asyncio.sleep(3600)  # Wait an hour before rechecking
+                continue
+
+            print(f"Fetching media for @{username}...")
+            user_id = cl.user_id_from_username(username)
+            medias = cl.user_medias_gql(user_id, amount=1)
+            if not medias:
+                print(f"No posts found for @{username}.")
+                continue
+
+            media = medias[0]
+            if not media.caption_text:
+                print(f"Skipped media from @{username}: No caption.")
+                continue
+
+            # Repost photo or video based on media type
+            if media.media_type == 1:  # Photo
+                media_path = cl.photo_download(media.pk)
+                cl.photo_upload(media_path, caption=media.caption_text)
+                print(f"Reposted photo from @{username}.")
+            elif media.media_type == 2:  # Video
+                media_path = cl.video_download(media.pk)
+                cl.video_upload(media_path, caption=media.caption_text)
+                print(f"Reposted video from @{username}.")
+            else:
+                print(f"Unsupported media type from @{username}. Skipping.")
+
+            # Clean up downloaded media
+            Path(media_path).unlink()
+
+            await asyncio.sleep(7200)  # Wait 2 hours before reposting
+        except Exception as e:
+            print(f"Error reposting media from @{username}: {e}")
+
+
 
 async def main():
     """Main function to orchestrate tasks."""
