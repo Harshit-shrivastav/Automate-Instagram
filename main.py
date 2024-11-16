@@ -166,9 +166,9 @@ async def main():
         tasks = []
         for username in likers_source_usernames:
             tasks.append(fetch_likers_and_follow(username))
-
-        tasks.append(unfollow_non_followers())
+            
         tasks.append(repost_media(repost_usernames))
+        tasks.append(unfollow_non_followers())
 
         await asyncio.gather(*tasks)
 
