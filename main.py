@@ -1,19 +1,12 @@
 import os
 import asyncio
 import sqlite3
-from pytz import timezone
 from datetime import datetime, timedelta
 from instagrapi import Client
 from instagrapi.exceptions import ClientError
-from pathlib import Path
 
 # Initialize Instagram client
 cl = Client()
-
-# Challenge handler for two-factor authentication
-def challenge_handler(username, choice):
-    print(f"Enter code (6 digits) for {username} ({choice}):")
-    return input().strip()
 
 # Database setup
 DATABASE = "insta_data.db"
@@ -24,38 +17,54 @@ def setup_database():
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS follows (
             username TEXT PRIMARY KEY,
-            follow_date TIMESTAMP
+            user_id INTEGER,
+            follow_date TIMESTAMP,
+            is_following_me INTEGER
         )
     """)
     conn.commit()
     conn.close()
 
-def add_followed_user(username):
+def add_followed_user(username, user_id, is_following_me):
     conn = sqlite3.connect(DATABASE)
     cursor = conn.cursor()
-    cursor.execute("INSERT OR IGNORE INTO follows (username, follow_date) VALUES (?, ?)", (username, datetime.now()))
+    cursor.execute("""
+        INSERT OR REPLACE INTO follows (username, user_id, follow_date, is_following_me)
+        VALUES (?, ?, ?, ?)
+    """, (username, user_id, datetime.now(), int(is_following_me)))
     conn.commit()
     conn.close()
 
 def get_followed_users():
     conn = sqlite3.connect(DATABASE)
     cursor = conn.cursor()
-    cursor.execute("SELECT username FROM follows")
-    result = [row[0] for row in cursor.fetchall()]
+    cursor.execute("SELECT username, user_id, is_following_me FROM follows")
+    result = cursor.fetchall()
     conn.close()
     return result
 
-def remove_followed_user(username):
+def update_follow_status(user_id, is_following_me):
     conn = sqlite3.connect(DATABASE)
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM follows WHERE username = ?", (username,))
+    cursor.execute("""
+        UPDATE follows
+        SET is_following_me = ?
+        WHERE user_id = ?
+    """, (int(is_following_me), user_id))
     conn.commit()
     conn.close()
 
-def get_follow_date(username):
+def remove_followed_user(user_id):
     conn = sqlite3.connect(DATABASE)
     cursor = conn.cursor()
-    cursor.execute("SELECT follow_date FROM follows WHERE username = ?", (username,))
+    cursor.execute("DELETE FROM follows WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+
+def get_follow_date(user_id):
+    conn = sqlite3.connect(DATABASE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT follow_date FROM follows WHERE user_id = ?", (user_id,))
     result = cursor.fetchone()
     conn.close()
     return result[0] if result else None
@@ -67,7 +76,6 @@ async def login():
     if not username or not password:
         raise ValueError("Instagram username and password must be set in environment variables.")
     
-    cl.challenge_code_handler = challenge_handler
     try:
         try:
             cl.load_settings("settings.json")
@@ -96,15 +104,15 @@ async def fetch_likers_and_follow(target_username):
         likers = cl.media_likers(media_id)
         print(f"Found {len(likers)} likers for @{target_username}.")
 
-        already_followed = get_followed_users()
+        followed_users = {user[0] for user in get_followed_users()}
         for liker in likers:
-            if liker.username in already_followed:
+            if liker.username in followed_users:
                 print(f"Skipping @{liker.username}: Already followed.")
                 continue
             
             cl.user_follow(liker.pk)
             print(f"Followed @{liker.username}")
-            add_followed_user(liker.username)
+            add_followed_user(liker.username, liker.pk, False)
             await asyncio.sleep(900)  # Wait 15 minutes before following the next user
     except Exception as e:
         print(f"Error fetching likers for @{target_username}: {e}")
@@ -113,15 +121,20 @@ async def unfollow_non_followers():
     """Unfollow users who didn't follow back within 2 days."""
     try:
         followed_users = get_followed_users()
-        for username in followed_users:
-            user_id = cl.user_id_from_username(username)
+        for username, user_id, is_following_me in followed_users:
+            if is_following_me:
+                print(f"Skipping @{username}: Already following back.")
+                continue
+
             user_info = cl.user_info(user_id)
+            update_follow_status(user_id, user_info.is_following_me)
+
             if not user_info.is_following_me:
-                follow_date = datetime.strptime(get_follow_date(username), "%Y-%m-%d %H:%M:%S")
+                follow_date = datetime.strptime(get_follow_date(user_id), "%Y-%m-%d %H:%M:%S")
                 if datetime.now() - follow_date >= timedelta(days=2):
                     cl.user_unfollow(user_id)
                     print(f"Unfollowed @{username}: Didn't follow back in 2 days.")
-                    remove_followed_user(username)
+                    remove_followed_user(user_id)
                     await asyncio.sleep(600)  # Wait 10 minutes before unfollowing the next user
     except Exception as e:
         print(f"Error during unfollowing: {e}")
@@ -177,19 +190,15 @@ async def main():
 
     # Load target usernames from environment variables
     likers_source_usernames = os.getenv("IG_LIKERS_SOURCE", "").split(",")
-    repost_usernames = os.getenv("IG_REPOST_USERNAMES", "").split(",")
 
-    if not likers_source_usernames or not repost_usernames:
+    if not likers_source_usernames:
         raise ValueError("Target usernames must be set in environment variables.")
 
     while True:
         tasks = []
         for username in likers_source_usernames:
             tasks.append(fetch_likers_and_follow(username))
-            
-        tasks.append(repost_media(repost_usernames))
         tasks.append(unfollow_non_followers())
-
         await asyncio.gather(*tasks)
 
 if __name__ == "__main__":
